@@ -6,7 +6,7 @@
 //  Copyright © 2020 John Holdsworth. All rights reserved.
 //
 //  Repo: https://github.com/johnno1962/SwiftTrace
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftMeta.swift#87 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftMeta.swift#92 $
 //
 //  Requires https://github.com/johnno1962/StringIndex.git
 //
@@ -211,13 +211,15 @@ public class SwiftMeta {
         "Swift.AnyObject": AnyObject.self,
         "Swift.AnyObject.Type": AnyClass.self,
         "Swift.Optional<Swift.Error>": Error?.self,
+        "Swift.Dictionary<Swift.AnyHashable, Any>": [AnyHashable: Any].self,
         "Swift.Error": Error.self,
         "()": Void.self,
         "some": nil,
 
         // Has private enum property containg a Locale
         "Fruta.ContentView" : nil,
-        // Also uses Foundation type inside enum
+        "Fruta_iOS.ContentView" : nil,
+        // Also uses resilient Foundation type inside enum
         "Kingfisher.ExpirationExtending": nil,
     ]
     static var typeLookupCacheLock = OS_SPINLOCK_INIT
@@ -338,7 +340,7 @@ public class SwiftMeta {
                 let witnessSuffix = "ACS\(enc)AAWl"
                 (mangledName + witnessSuffix).withCString { getWitnessSymbol in
                     typealias GetWitness = @convention(c) () -> UnsafeRawPointer
-                    findSwiftSymbols(nil, witnessSuffix) {
+                    findHiddenSwiftSymbols(nil, witnessSuffix, ST_HIDDEN_VISIBILITY) {
                         (address, symbol, _, _) in
                         if strcmp(symbol, getWitnessSymbol) == 0,
                             let witnessFptr: GetWitness = autoBitCast(address) {
@@ -385,9 +387,16 @@ public class SwiftMeta {
             passedByReference(type)
         }
 
+        for iOS15ResilientTypeName in ["Foundation.AttributedString",
+                                       "Foundation.AttributedString.Index"] {
+            if let resilientType = lookupType(named: iOS15ResilientTypeName) {
+                passedByReference(resilientType)
+            }
+        }
+
         #if true // Attempts to determine which getters have storage
         // properties that have key path getters are not stored??
-        findSwiftSymbols(nil, "pACTK") { (_, symbol, _, _) in
+        findHiddenSwiftSymbols(nil, "pACTK", ST_HIDDEN_VISIBILITY) { (_, symbol, _, _) in
             doesntHaveStorage.insert(String(cString: symbol)
                 .replacingOccurrences(of: "pACTK", with: "g"))
         }

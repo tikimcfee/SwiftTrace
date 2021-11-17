@@ -5,7 +5,7 @@
 //  Created by John Holdsworth on 23/09/2020.
 //  Copyright © 2020 John Holdsworth. All rights reserved.
 //
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#58 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#64 $
 //
 //  Extensions to SwiftTrace using dyld_dynamic_interpose
 //  =====================================================
@@ -20,7 +20,10 @@ import SwiftTraceGuts
 extension SwiftTrace {
 
     /// Function type suffixes at end of mangled symbol name
-    public static var swiftFunctionSuffixes = ["fC", "yF", "lF", "tF", "Qrvg", "fD"]
+    /// to interpose i.e. constructors, functions (methods),
+    /// getters of Opaque type (for SwiftUI body properties)
+    /// and setters and destructors.
+    public static var swiftFunctionSuffixes = ["fC", "F", "Qrvg", "s", "fD"]
 
     /// Regexp pattern for functions to exclude from interposing
     public static var interposeEclusions: NSRegularExpression? = nil
@@ -65,7 +68,7 @@ extension SwiftTrace {
         var interposes = [dyld_interpose_tuple]()
 
         for suffix in swiftFunctionSuffixes {
-            findSwiftSymbols(aBundle, suffix, { symval, symname, _, _ in
+            findSwiftSymbols(aBundle, suffix) { symval, symname, _, _ in
                 if SwiftMeta.demangle(symbol: symname) == methodName,
                     let current = interposed(replacee: symval),
                     let method = patchClass.init(name: methodName,
@@ -76,7 +79,7 @@ extension SwiftTrace {
                         replacement: autoBitCast(method.forwardingImplementation),
                         replacee: current))
                 }
-            })
+            }
         }
 
         return apply(interposes: interposes, symbols: [methodName])
@@ -156,42 +159,15 @@ extension SwiftTrace {
         return replaced
     }
 
+    /// Legacy entry point that can use either fishhook or "dyld_dynamic_interpose"
     open class func apply(interposes: [dyld_interpose_tuple],
-                          symbols: [UnsafePointer<Int8>],
-                          onInjection: ((UnsafePointer<mach_header>) -> Void)? = nil) -> Int {
-        let interposed = NSObject.swiftTraceInterposed.bindMemory(to:
-            [UnsafeRawPointer : UnsafeRawPointer].self, capacity: 1)
-        for toapply in interposes
-            where toapply.replacee != toapply.replacement {
-            interposed.pointee[toapply.replacee] = toapply.replacement
-        }
+                          symbols: [UnsafePointer<Int8>], onInjection:
+                    ((UnsafePointer<mach_header>, intptr_t) -> Void)? = nil)
+        -> Int {
+        var rebindings = record(interposes: interposes, symbols: symbols)
         #if true // use fishhook now
-        var rebindings = [rebinding]()
-        for i in 0..<interposes.count {
-            rebindings.append(rebinding(name: symbols[i],
-                replacement: UnsafeMutableRawPointer(mutating:
-                interposes[i].replacement), replaced: nil))
-        }
-        var replaced = 0
-        rebindings.withUnsafeMutableBufferPointer {
-            let buffer = $0.baseAddress!, count = $0.count
-            appBundleImages { _, mh, slide in
-                for i in 0..<count {
-                    buffer[i].replaced =
-                        UnsafeMutablePointer(cast: &buffer[i].replaced)
-                }
-                rebind_symbols_image(UnsafeMutableRawPointer(mutating: mh),
-                                     slide, buffer, count)
-                for i in 0..<count {
-                    if buffer[i].replaced !=
-                        UnsafeMutablePointer(cast: &buffer[i].replaced) {
-                        replaced += 1
-                    }
-                }
-            }
-        }
-        return replaced
-        #else
+        return apply(rebindings: &rebindings, onInjection: onInjection).count
+        #else // Original way using dyld_dynamic_interpose
         interposes.withUnsafeBufferPointer { interposes in
             let debugInterpose = getenv("DEBUG_INTERPOSE") != nil
             var lastLoaded = true
@@ -215,6 +191,55 @@ extension SwiftTrace {
             }
         }
         #endif
+    }
+
+    /// record interposed so they can be untraced and combine with symbols to create rebindings
+    open class func record(interposes: [dyld_interpose_tuple],
+                           symbols: [UnsafePointer<Int8>]) -> [rebinding] {
+        let interposed = NSObject.swiftTraceInterposed.bindMemory(to:
+            [UnsafeRawPointer : UnsafeRawPointer].self, capacity: 1)
+        for toapply in interposes
+            where toapply.replacee != toapply.replacement {
+            interposed.pointee[toapply.replacee] = toapply.replacement
+        }
+        var rebindings = [rebinding]()
+        for i in 0..<interposes.count {
+            rebindings.append(rebinding(name: symbols[i],
+                replacement: UnsafeMutableRawPointer(mutating:
+                interposes[i].replacement), replaced: nil))
+        }
+        return rebindings
+    }
+
+    /// Use fishhook to apply interposes returning an array of symbols that were patched
+    open class func apply(rebindings: inout [rebinding], onInjection:
+        ((UnsafePointer<mach_header>, intptr_t) -> Void)? = nil)
+        -> [UnsafePointer<Int8>] {
+        var interposed = [UnsafePointer<Int8>]()
+        rebindings.withUnsafeMutableBufferPointer {
+            let buffer = $0.baseAddress!, count = $0.count
+            var lastLoaded = true
+            appBundleImages { img, mh, slide in
+                if lastLoaded {
+                    onInjection?(mh, slide)
+                    lastLoaded = false
+                }
+
+                for i in 0..<count {
+                    buffer[i].replaced =
+                        UnsafeMutablePointer(cast: &buffer[i].replaced)
+                }
+                rebind_symbols_image(UnsafeMutableRawPointer(mutating: mh),
+                                     slide, buffer, count)
+                for i in 0..<count {
+                    if buffer[i].replaced !=
+                        UnsafeMutablePointer(cast: &buffer[i].replaced) {
+                        interposed.append(buffer[i].name)
+                    }
+                }
+            }
+        }
+        return interposed
     }
 
     /// Revert all previous interposes

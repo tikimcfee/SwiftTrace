@@ -3,7 +3,7 @@
 //  SwiftTrace
 //
 //  Repo: https://github.com/johnno1962/SwiftTrace
-//  $Id: //depot/SwiftTrace/SwiftTraceGuts/SwiftTrace.mm#69 $
+//  $Id: //depot/SwiftTrace/SwiftTraceGuts/SwiftTrace.mm#74 $
 //
 //  Trampoline code thanks to:
 //  https://github.com/OliverLetterer/imp_implementationForwardingToSelector
@@ -130,9 +130,10 @@ static SPLForwardingTrampolinePage *SPLForwardingTrampolinePageAlloc()
     return (SPLForwardingTrampolinePage *)newTrampolinePage;
 }
 
+static NSMutableArray *normalTrampolinePages = nil;
+
 static SPLForwardingTrampolinePage *nextTrampolinePage()
 {
-    static NSMutableArray *normalTrampolinePages = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         normalTrampolinePages = [NSMutableArray array];
@@ -825,6 +826,16 @@ const char *swiftUIBundlePath() {
     return nullptr;
 }
 
+id findSwizzleOf(void * _Nonnull trampoline) {
+    for (NSValue *allocated in normalTrampolinePages) {
+        SPLForwardingTrampolinePage *trampolinePage =
+            (SPLForwardingTrampolinePage *)allocated.pointerValue;
+        if (trampoline >= trampolinePage->trampolineInstructions && trampoline <
+            trampolinePage->trampolineInstructions + numberOfTrampolinesPerPage)
+            return *(id const *)(void *)((char *)trampoline - PAGE_SIZE);
+    }
+    return nil;
+}
 // https://stackoverflow.com/questions/20481058/find-pathname-from-dlopen-handle-on-osx
 
 #import <dlfcn.h>
@@ -855,11 +866,18 @@ const char *classesIncludingObjc() {
 }
 
 void findSwiftSymbols(const char *bundlePath, const char *suffix,
-                      void (^callback)(const void *symval, const char *symname, void *typeref, void *typeend)) {
-    for (int32_t i = _dyld_image_count(); i >= 0 ; i--) {
+        void (^callback)(const void *symval, const char *symname, void *typeref, void *typeend)) {
+    findHiddenSwiftSymbols(bundlePath, suffix, ST_GLOBAL_VISIBILITY, callback);
+}
+
+void findHiddenSwiftSymbols(const char *bundlePath, const char *suffix, int visibility,
+        void (^callback)(const void *symval, const char *symname, void *typeref, void *typeend)) {
+    for (int32_t i = _dyld_image_count()-1; i >= 0 ; i--) {
         const char *imageName = _dyld_get_image_name(i);
         if (!(imageName && (!bundlePath || imageName == bundlePath ||
-                            strcmp(imageName, bundlePath) == 0)))
+                            strcmp(imageName, bundlePath) == 0 ||
+                            // for when prefixed with /private
+                            strcmp(imageName+8, bundlePath) == 0)))
             continue;
 
         const mach_header_t *header =
@@ -893,15 +911,14 @@ void findSwiftSymbols(const char *bundlePath, const char *suffix,
                     nlist_t *sym = (nlist_t *)((intptr_t)header +
                                                (symtab->symoff + file_slide));
                     size_t sufflen = strlen(suffix);
-                    BOOL witnessFuncSearch = strcmp(suffix+sufflen-2, "Wl") == 0 ||
-                                             strcmp(suffix+sufflen-5, "pACTK") == 0;
-                    uint8_t symbolVisibility = witnessFuncSearch ? 0x1e : 0xf;
 
                     for (uint32_t i = 0; i < symtab->nsyms; i++, sym++) {
                         const char *symname = strings + sym->n_un.n_strx;
                         void *address;
 
-                        if (sym->n_type == symbolVisibility &&
+//                        printf("%d %s %d\n", visibility, symname, sym->n_type);
+
+                        if (sym->n_type == visibility &&
                             sym->n_sect != NO_SECT &&
                             ((strncmp(symname, "_$s", 3) == 0 &&
                               strcmp(symname+strlen(symname)-sufflen, suffix) == 0) ||
@@ -922,7 +939,7 @@ void findSwiftSymbols(const char *bundlePath, const char *suffix,
     }
 }
 
-void appBundleImages(void (^callback)(const char *sym, const struct mach_header *, intptr_t slide)) {
+void appBundleImages(void (^callback)(const char *imageName, const struct mach_header *, intptr_t slide)) {
     NSBundle *mainBundle = [NSBundle mainBundle];
     const char *mainExecutable = mainBundle.executablePath.UTF8String;
     const char *bundleFrameworks = mainBundle.privateFrameworksPath.UTF8String;

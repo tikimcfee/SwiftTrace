@@ -6,7 +6,7 @@
 //  Copyright © 2016 John Holdsworth. All rights reserved.
 //
 //  Repo: https://github.com/johnno1962/SwiftTrace
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftTrace.swift#284 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftTrace.swift#294 $
 //
 
 import Foundation
@@ -130,7 +130,7 @@ open class SwiftTrace: NSObject {
             UIImage _initWithCompositedSymbolImageLayers:name:alignUsingBaselines:|\
             _UIWindowSceneDeviceOrientationSettingsDiffAction _updateDeviceOrientationWithSettingObserverContext:windowScene:transitionContext:|\
             UIColorEffect colorEffectSaturate:|UIWindow _windowWithContextId:|RxSwift.ScheduledDisposable.dispose| ns(?:li|is)_|\
-            SwiftTrace|HotReloading|eraseToAnyView
+            SwiftTrace|HotReloading|eraseToAnyView|_toUTF16Offsets
             """
     }
 
@@ -278,9 +278,9 @@ open class SwiftTrace: NSObject {
      */
     @objc open class func swiftClassList(bundlePath: UnsafePointer<Int8>? = nil) -> [AnyClass] {
         var classes = [AnyClass]()
-        findSwiftSymbols(bundlePath, "CN", { aClass, _, _, _ in
+        findSwiftSymbols(bundlePath, "CN") { aClass, _, _, _ in
             classes.append(autoBitCast(aClass))
-        })
+        }
         return classes
     }
 
@@ -325,16 +325,20 @@ open class SwiftTrace: NSObject {
         }
         trace(objcClass: aClass, which: "-")
 
-        if let bundle = class_getImageName(aClass),
-            bundlesInterposed.contains(String(cString: bundle)) {
-            return
-        }
+//        if let bundle = class_getImageName(aClass),
+//            bundlesInterposed.contains(String(cString: bundle)) {
+//            return
+//        }
 
         iterateMethods(ofClass: aClass) {
             (name, slotIndex, vtableSlot, stop) in
-            if let factory = methodFilter(name),
-                let swizzle = factory.init(name: name, vtableSlot: vtableSlot) {
-                vtableSlot.pointee = swizzle.forwardingImplementation
+            if let factory = methodFilter(name) {
+                if let swizzle = factory.init(name: name, vtableSlot: vtableSlot) {
+//                    print("Patching #\(slotIndex) \(name)")
+                    vtableSlot.pointee = swizzle.forwardingImplementation
+                }
+            } else {
+                print("Excluding SwiftTrace of \(name)")
             }
         }
     }
@@ -375,6 +379,26 @@ open class SwiftTrace: NSObject {
                                    callback: (_ name: String, _ slotIndex: Int,
                                               _ vtableSlot: UnsafeMutablePointer<SIMP>,
                                               _ stop: inout Bool) -> Void) -> Bool {
+        forEachVTableEntry(ofClass: aClass) {
+            (symname, slotIndex, vtableSlot, stop) in
+            if let demangled = SwiftMeta.demangle(symbol: symname) {
+                callback(demangled, slotIndex, vtableSlot, &stop)
+            }
+        }
+    }
+
+    /**
+     Iterate over all methods in the vtable that follows the class information
+     of a Swift class (TargetClassMetadata)
+     - parameter aClass: the class, the methods of which to trace
+     - parameter callback: per method callback
+     */
+    @discardableResult
+    open class func forEachVTableEntry(ofClass aClass: AnyClass,
+                               callback: (_ symname: UnsafePointer<CChar>,
+                                          _ slotIndex: Int,
+                                          _ vtableSlot: UnsafeMutablePointer<SIMP>,
+                                          _ stop: inout Bool) -> Void) -> Bool {
         let swiftMeta: UnsafeMutablePointer<SwiftMeta.TargetClassMetadata> = autoBitCast(aClass)
         let className = NSStringFromClass(aClass)
         var stop = false
@@ -401,11 +425,18 @@ open class SwiftTrace: NSObject {
                 let voidPtr: UnsafeMutableRawPointer = autoBitCast(impl)
                 if fast_dladdr(voidPtr, &info) != 0, let symname = info.dli_sname,
                     let symlast = info.dli_sname?.advanced(by: strlen(symname)-1),
+                    // patch constructors, destructors, methods, getters, setters.
                     symlast.pointee == UInt8(ascii: "C") ||
                     symlast.pointee == UInt8(ascii: "D") ||
-                    symlast.pointee == UInt8(ascii: "F"),
-                    let demangled = SwiftMeta.demangle(symbol: symname) {
-                    callback(demangled, slotIndex,
+                    symlast.pointee == UInt8(ascii: "F") ||
+                    symlast.pointee == UInt8(ascii: "g") ||
+                    symlast.pointee == UInt8(ascii: "s") ||
+                    // and class methods, getters, setters
+                    symlast.pointee == UInt8(ascii: "Z") &&
+                        (symlast[-1] == UInt8(ascii: "F") ||
+                         symlast[-1] == UInt8(ascii: "g") ||
+                         symlast[-1] == UInt8(ascii: "s")) {
+                    callback(symname, slotIndex,
                              &vtableStart[slotIndex]!, &stop)
                     if stop {
                         break
@@ -447,44 +478,45 @@ open class SwiftTrace: NSObject {
         startNewTrace(subLevels: subLevels)
         let regex = matchingPattern.flatMap { NSRegularExpression(regexp: $0) }
         for witness in ["WP", "Wl"] {
-        findSwiftSymbols(inBundle, witness) {
-            (address: UnsafeRawPointer, _, typeref, typeend) in
-            let witnessTable = UnsafeMutablePointer<SIMP>(mutating: address)
-            var info = Dl_info()
-            // The start of a witness table is always the protocol descriptor
-            // then the associated types (always in section `__swift5_typeref`)
-            // followed by pointers to the witness tables of the protocols the
-            // protocol directly inherits from and finally pointers to the
-            // implementations of the functions defined by the original protocol.
-            // So it is possible to "safely" scan until the demangled symbol
-            // name is not an inherited protocol witness table or witness entry.
-            for slot in 1..<1000 {
-                // skip associated type witness entries
-                if typeref <= autoBitCast(witnessTable[slot]) &&
-                    autoBitCast(witnessTable[slot]) < typeend {
-                    continue
-                }
-                if fast_dladdr(autoBitCast(witnessTable[slot]),
-                               &info) != 0 && info.dli_sname != nil,
-                    let demangled = SwiftMeta.demangle(symbol: info.dli_sname) {
-                    if demangled.hasPrefix("protocol witness table for") {
+            findHiddenSwiftSymbols(inBundle, witness, witness == "Wl" ?
+                                    ST_HIDDEN_VISIBILITY : ST_GLOBAL_VISIBILITY) {
+                (address: UnsafeRawPointer, _, typeref, typeend) in
+                let witnessTable = UnsafeMutablePointer<SIMP>(mutating: address)
+                var info = Dl_info()
+                // The start of a witness table is always the protocol descriptor
+                // then the associated types (always in section `__swift5_typeref`)
+                // followed by pointers to the witness tables of the protocols the
+                // protocol directly inherits from and finally pointers to the
+                // implementations of the functions defined by the original protocol.
+                // So it is possible to "safely" scan until the demangled symbol
+                // name is not an inherited protocol witness table or witness entry.
+                for slot in 1..<1000 {
+                    // skip associated type witness entries
+                    if typeref <= autoBitCast(witnessTable[slot]) &&
+                        autoBitCast(witnessTable[slot]) < typeend {
                         continue
                     }
-                    if demangled.hasPrefix("protocol witness for ") &&
-                            !demangled.contains("SwiftTrace.") {
-                        if regex?.matches(demangled) != false,
-                            let factory = methodFilter(demangled),
-                            let swizzle = factory.init(name: demangled,
-                                           vtableSlot: &witnessTable[slot]) {
-//                            print("Tracing \(slot):", demangled)
-                            witnessTable[slot] = swizzle.forwardingImplementation
+                    if fast_dladdr(autoBitCast(witnessTable[slot]),
+                                   &info) != 0 && info.dli_sname != nil,
+                        let demangled = SwiftMeta.demangle(symbol: info.dli_sname) {
+                        if demangled.hasPrefix("protocol witness table for") {
+                            continue
                         }
-                        continue
+                        if demangled.hasPrefix("protocol witness for ") &&
+                                !demangled.contains("SwiftTrace.") {
+                            if regex?.matches(demangled) != false,
+                                let factory = methodFilter(demangled),
+                                let swizzle = factory.init(name: demangled,
+                                               vtableSlot: &witnessTable[slot]) {
+    //                            print("Tracing \(slot):", demangled)
+                                witnessTable[slot] = swizzle.forwardingImplementation
+                            }
+                            continue
+                        }
                     }
+                    break
                 }
-                break
             }
-        }
         }
     }
     #endif
