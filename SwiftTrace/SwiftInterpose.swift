@@ -5,7 +5,7 @@
 //  Created by John Holdsworth on 23/09/2020.
 //  Copyright © 2020 John Holdsworth. All rights reserved.
 //
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#64 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#66 $
 //
 //  Extensions to SwiftTrace using dyld_dynamic_interpose
 //  =====================================================
@@ -23,7 +23,7 @@ extension SwiftTrace {
     /// to interpose i.e. constructors, functions (methods),
     /// getters of Opaque type (for SwiftUI body properties)
     /// and setters and destructors.
-    public static var swiftFunctionSuffixes = ["fC", "F", "Qrvg", "s", "fD"]
+    public static var traceableFunctionSuffixes = ["fC", "F", "Qrvg", "s", "fD"]
 
     /// Regexp pattern for functions to exclude from interposing
     public static var interposeEclusions: NSRegularExpression? = nil
@@ -67,7 +67,7 @@ extension SwiftTrace {
                               replaceWith: nullImplementationType? = nil) -> Int {
         var interposes = [dyld_interpose_tuple]()
 
-        for suffix in swiftFunctionSuffixes {
+        for suffix in traceableFunctionSuffixes {
             findSwiftSymbols(aBundle, suffix) { symval, symname, _, _ in
                 if SwiftMeta.demangle(symbol: symname) == methodName,
                     let current = interposed(replacee: symval),
@@ -109,7 +109,7 @@ extension SwiftTrace {
         var interposes = [dyld_interpose_tuple]()
         var symbols = [UnsafePointer<Int8>]()
 
-        for suffix in swiftFunctionSuffixes {
+        for suffix in traceableFunctionSuffixes {
             findSwiftSymbols(inBundlePath, suffix) {
                 symval, symname,  _, _ in
                 if let methodName = SwiftMeta.demangle(symbol: symname),
@@ -219,24 +219,34 @@ extension SwiftTrace {
         rebindings.withUnsafeMutableBufferPointer {
             let buffer = $0.baseAddress!, count = $0.count
             var lastLoaded = true
-            appBundleImages { img, mh, slide in
+            appBundleImages { path, header, slide in
                 if lastLoaded {
-                    onInjection?(mh, slide)
+                    onInjection?(header, slide)
                     lastLoaded = false
                 }
 
-                for i in 0..<count {
-                    buffer[i].replaced =
-                        UnsafeMutablePointer(cast: &buffer[i].replaced)
-                }
-                rebind_symbols_image(UnsafeMutableRawPointer(mutating: mh),
-                                     slide, buffer, count)
-                for i in 0..<count {
-                    if buffer[i].replaced !=
-                        UnsafeMutablePointer(cast: &buffer[i].replaced) {
-                        interposed.append(buffer[i].name)
-                    }
-                }
+                interposed += apply(rebindings: buffer, count: count,
+                                    header: header, slide: slide)
+            }
+        }
+        return interposed
+    }
+
+    /// Use fishhook to apply interposes in an image returning an array of symbols that were patched
+    open class func apply(rebindings: UnsafeMutablePointer<rebinding>, count: Int,
+                          header: UnsafePointer<mach_header>, slide: intptr_t)
+        -> [UnsafePointer<Int8>] {
+        var interposed = [UnsafePointer<Int8>]()
+        for i in 0..<count {
+            rebindings[i].replaced =
+                UnsafeMutablePointer(cast: &rebindings[i].replaced)
+        }
+        rebind_symbols_image(UnsafeMutableRawPointer(mutating: header),
+                             slide, rebindings, count)
+        for i in 0..<count {
+            if rebindings[i].replaced !=
+                UnsafeMutablePointer(cast: &rebindings[i].replaced) {
+                interposed.append(rebindings[i].name)
             }
         }
         return interposed

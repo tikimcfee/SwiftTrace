@@ -6,7 +6,7 @@
 //  Copyright © 2016 John Holdsworth. All rights reserved.
 //
 //  Repo: https://github.com/johnno1962/SwiftTrace
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftTrace.swift#294 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftTrace.swift#312 $
 //
 
 import Foundation
@@ -122,7 +122,8 @@ open class SwiftTrace: NSObject {
      */
     open class var defaultMethodExclusions: String {
         return """
-            \\.getter : (?!some)| (?:retain(?:Count)?|_tryRetain|release|autorelease|_isDeallocating|_?dealloc|class|self|description|\
+            \\.getter : (?!some)|\\.hash[(]into: | async |interposedPointer|\
+             (?:retain(?:Count)?|_tryRetain|release|autorelease|_isDeallocating|_?dealloc|class|self|description|\
             debugDescription|contextID|undoManager|_animatorClassForTargetClass|cursorUpdate|_isTrackingAreaObject)]|\
             ^\\+\\[(?:Reader_Base64|UI(?:NibStringIDTable|NibDecoder|CollectionViewData|WebTouchEventsGestureRecognizer)) |\
             ^.\\[(?:__NSAtom|NS(?:View|Appearance|AnimationContext|Segment|KVONotifying_\\S+)|_NSViewAnimator|UIView|RemoteCapture|BCEvent|SimpleSocket) |\
@@ -130,7 +131,7 @@ open class SwiftTrace: NSObject {
             UIImage _initWithCompositedSymbolImageLayers:name:alignUsingBaselines:|\
             _UIWindowSceneDeviceOrientationSettingsDiffAction _updateDeviceOrientationWithSettingObserverContext:windowScene:transitionContext:|\
             UIColorEffect colorEffectSaturate:|UIWindow _windowWithContextId:|RxSwift.ScheduledDisposable.dispose| ns(?:li|is)_|\
-            SwiftTrace|HotReloading|eraseToAnyView|_toUTF16Offsets
+            SwiftTrace|SwiftRegex|HotReloading|Xprobe|eraseToAnyView|_toUTF16Offsets
             """
     }
 
@@ -212,7 +213,7 @@ open class SwiftTrace: NSObject {
         if bundlePath != nil {
             let resilientSuperclass = 1 // dummy value for superclass
             let resilientPrefix = "OBJC_CLASS_$__TtC"
-            findSwiftSymbols(bundlePath, classesIncludingObjc()) {
+            findHiddenSwiftSymbols(bundlePath, classesIncludingObjc(), .any) {
                 aClass, symbol, _,_ in
                 var aClass = aClass
                 let symname = String(cString: symbol)
@@ -422,20 +423,10 @@ open class SwiftTrace: NSObject {
                 if let swizzle = originalSwizzle(for: impl) {
                     impl = swizzle.implementation
                 }
-                let voidPtr: UnsafeMutableRawPointer = autoBitCast(impl)
-                if fast_dladdr(voidPtr, &info) != 0, let symname = info.dli_sname,
-                    let symlast = info.dli_sname?.advanced(by: strlen(symname)-1),
+                if fast_dladdr(autoBitCast(impl), &info) != 0,
+                   let symname = info.dli_sname,
                     // patch constructors, destructors, methods, getters, setters.
-                    symlast.pointee == UInt8(ascii: "C") ||
-                    symlast.pointee == UInt8(ascii: "D") ||
-                    symlast.pointee == UInt8(ascii: "F") ||
-                    symlast.pointee == UInt8(ascii: "g") ||
-                    symlast.pointee == UInt8(ascii: "s") ||
-                    // and class methods, getters, setters
-                    symlast.pointee == UInt8(ascii: "Z") &&
-                        (symlast[-1] == UInt8(ascii: "F") ||
-                         symlast[-1] == UInt8(ascii: "g") ||
-                         symlast[-1] == UInt8(ascii: "s")) {
+                    injectableSymbol(symname) {
                     callback(symname, slotIndex,
                              &vtableStart[slotIndex]!, &stop)
                     if stop {
@@ -446,6 +437,42 @@ open class SwiftTrace: NSObject {
         }
 
         return stop
+    }
+
+    public static var preserveStatics = false
+
+    /// Determine if symbol name is injectable
+    /// - Parameter symname: Pointer to symbol name
+    /// - Returns: Whether symbol should be patched
+    @objc public static var injectableSymbol: // STSymbolFilter
+        (UnsafePointer<CChar>) -> Bool = { symname in
+//        print("Injectable?", String(cString: symname))
+        let symstart = symname +
+            (symname.pointee == UInt8(ascii: "_") ? 1 : 0)
+        let isCPlusPlus = strncmp(symstart, "_ZN", 3) == 0
+        if isCPlusPlus { return true }
+        let isSwift = strncmp(symstart, "$s", 2) == 0
+        if !isSwift { return false }
+        var symlast = symname+strlen(symname)-1
+        return
+            symlast.match(ascii: "C") ||
+            symlast.match(ascii: "D") ||
+            // static/class methods, getters, setters
+            (symlast.match(ascii: "Z") || true) &&
+                (symlast.match(ascii: "F") ||
+                 symlast.match(ascii: "g") ||
+                 symlast.match(ascii: "s")) ||
+            // async [class] functions
+            symlast.match(ascii: "u") && (
+                symlast.match(ascii: "T") &&
+                (symlast.match(ascii: "Z") || true) &&
+                symlast.match(ascii: "F") ||
+                // "Mutable Addressors"
+                !preserveStatics &&
+                symlast.match(ascii: "a") &&
+                symlast.match(ascii: "v")) ||
+            symlast.match(ascii: "M") &&
+            symlast.match(ascii: "v")
     }
 
     #if swift(>=5.0)
@@ -479,7 +506,7 @@ open class SwiftTrace: NSObject {
         let regex = matchingPattern.flatMap { NSRegularExpression(regexp: $0) }
         for witness in ["WP", "Wl"] {
             findHiddenSwiftSymbols(inBundle, witness, witness == "Wl" ?
-                                    ST_HIDDEN_VISIBILITY : ST_GLOBAL_VISIBILITY) {
+                                    .hidden : .global) {
                 (address: UnsafeRawPointer, _, typeref, typeend) in
                 let witnessTable = UnsafeMutablePointer<SIMP>(mutating: address)
                 var info = Dl_info()
@@ -523,13 +550,13 @@ open class SwiftTrace: NSObject {
 
     /** follow chain of Sizzles through to find original implementataion */
     open class func originalSwizzle(for implementation: IMP) -> Swizzle? {
+        var trace: SwiftTrace? = SwiftTrace.lastSwiftTrace
         var implementation = implementation
         var swizzle: Swizzle?
-        var trace: SwiftTrace? = SwiftTrace.lastSwiftTrace
         while trace != nil {
-            while trace!.activeSwizzles[implementation] != nil {
-                swizzle = trace!.activeSwizzles[implementation]
-                implementation = swizzle!.implementation
+            while let previous = trace?.activeSwizzles[implementation] {
+                swizzle = previous
+                implementation = previous.implementation
             }
             trace = trace?.previousSwiftTrace
         }
@@ -629,5 +656,16 @@ open class SwiftTrace: NSObject {
             name[Int(strlen(name))-1] = 0
             return class_getProperty(aClass, &name[3]) != nil
         }
+    }
+}
+
+extension UnsafePointer where Pointee == Int8 {
+    @inline(__always)
+    mutating func match(ascii: UnicodeScalar, inc: Int = -1) -> Bool {
+        if pointee == UInt8(ascii: ascii) {
+            self = self.advanced(by: inc)
+            return true
+        }
+        return false
     }
 }
