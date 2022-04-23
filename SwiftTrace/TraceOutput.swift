@@ -15,24 +15,26 @@ public enum TraceOutput: CustomDebugStringConvertible {
     case entry(invocation: SwiftTrace.Swizzle.Invocation, method: Method?, decorated: String, subLog: Bool)
     case exit (invocation: SwiftTrace.Swizzle.Invocation, method: Method?, decorated: String, subLog: Bool)
     
+    public var decorated: String {
+        switch self {
+        case .entry(_, _, let decorated, _): return decorated
+        case .exit(_, _, let decorated, _): return decorated
+        }
+    }
+    
     public var debugDescription: String {
         switch self {
         case .entry(let invocation, _, let decorated, let subLog):
-            return String(
-                format: "%@%@%@",
-                subLog ? "\n" : "",
-                indent(from: invocation),
-                decorated
-            )
+            return """
+            \(subLog ? "\n" : "")\(indent(from: invocation))\(decorated)
+            """
         case .exit(let invocation, let method, let decorated, let subLog):
-            return String(
-                format: "%@%@%@%@",
-                subLog ? indent(from: invocation)
-                    : method != nil ? " ->" : "",
-                decorated,
-                elapsed(from: invocation),
-                subLog ? "" : "\n"
-            )
+            let subLine = invocation.subLogged
+                ? "\n\(indent(from: invocation))<-"
+                : method != nil ? " ->" : ""
+            return """
+            \(subLine)\(decorated)\(elapsed(from: invocation))\(subLog ? "" : "\n")
+            """
         }
     }
     
@@ -47,10 +49,10 @@ public enum TraceOutput: CustomDebugStringConvertible {
 }
 
 public class TraceOutputLog {
-    public var doLog: ((TraceOutput) -> Void)?
+    public var onOutput: ((TraceOutput) -> Void)?
     
     func log(_ output: TraceOutput) {
-        doLog?(output)
+        onOutput?(output)
         ?? debugPrint(output, terminator: "")
     }
 }
