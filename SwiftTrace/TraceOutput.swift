@@ -25,15 +25,14 @@ public enum TraceOutput: CustomDebugStringConvertible {
     public var debugDescription: String {
         switch self {
         case .entry(let invocation, _, let decorated, let subLog):
-            return """
-            \(subLog ? "\n" : "")\(indent(from: invocation))\(decorated)
-            """
+            return "\(subLog ? "\n" : "")\(indent(from: invocation))\(decorated)"
         case .exit(let invocation, let method, let decorated, let subLog):
-            let subLine = invocation.subLogged
-                ? "\n\(indent(from: invocation))<-"
-                : method != nil ? " ->" : ""
             return """
-            \(subLine)\(decorated)\(elapsed(from: invocation))\(subLog ? "" : "\n")
+            \(invocation.subLogged ? """
+                \n\(String(repeating: "  ",
+                           count: invocation.stackDepth))<-
+                """ : method != nil ? " ->" : "") \
+            \(decorated)\(elapsed(from: invocation))\(subLog ? "" : "\n")
             """
         }
     }
