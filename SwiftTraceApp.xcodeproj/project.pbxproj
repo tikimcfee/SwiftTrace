@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B72145672813D71B00EBF2E3 /* TraceOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = B72145662813D71B00EBF2E3 /* TraceOutput.swift */; };
 		BB07C35F2577F99800FD6ADB /* xt_forwarding_trampoline_arm64.s in Sources */ = {isa = PBXBuildFile; fileRef = BBC3D1F01D0A43E800520F38 /* xt_forwarding_trampoline_arm64.s */; };
 		BB1B8179251B631900F76DC7 /* SwiftStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B8178251B631900F76DC7 /* SwiftStats.swift */; };
 		BB1B817B251B632D00F76DC7 /* SwiftInterpose.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB1B817A251B632D00F76DC7 /* SwiftInterpose.swift */; };
@@ -134,6 +135,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B72145662813D71B00EBF2E3 /* TraceOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TraceOutput.swift; sourceTree = "<group>"; };
 		BB16653B25EACF3C001407AE /* Package.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		BB1B8178251B631900F76DC7 /* SwiftStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftStats.swift; sourceTree = "<group>"; };
 		BB1B817A251B632D00F76DC7 /* SwiftInterpose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftInterpose.swift; sourceTree = "<group>"; };
@@ -281,6 +283,7 @@
 				BBB9E976279BEA900085E3B9 /* fast_dladdr.mm */,
 				BBC3D1F81D0A445D00520F38 /* SwiftTrace.swift */,
 				BB1C5CD2244D94B300297908 /* SwiftSwizzle.swift */,
+				B72145662813D71B00EBF2E3 /* TraceOutput.swift */,
 				BB1C5CB5244D8A1200297908 /* SwiftAspects.swift */,
 				BB1C5CB7244D8A2F00297908 /* SwiftInvoke.swift */,
 				BB1C5CAC244C8E4700297908 /* SwiftArgs.swift */,
@@ -568,6 +571,7 @@
 				BB1C5CD3244D94B300297908 /* SwiftSwizzle.swift in Sources */,
 				BB1C5CBA244D8A6B00297908 /* SwiftStack.swift in Sources */,
 				BBC3D1F41D0A43E800520F38 /* xt_forwarding_trampoline_x64.s in Sources */,
+				B72145672813D71B00EBF2E3 /* TraceOutput.swift in Sources */,
 				BBC3D1F71D0A442F00520F38 /* SwiftTrace.mm in Sources */,
 				BB1C5CBB244D8AD700297908 /* SwiftMeta.swift in Sources */,
 				BB64461C2545816500A83098 /* StringIndex.swift in Sources */,
