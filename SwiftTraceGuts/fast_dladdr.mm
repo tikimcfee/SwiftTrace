@@ -57,7 +57,7 @@ const std::vector<PseudoImage> &getLoadedPseudoImages(void) {
 #if TRY_TO_OPTIMISE_DLADDR
 namespace fastdladdr {
 
-#import <algorithm>
+// #import <algorithm>
 
 using namespace std;
 
