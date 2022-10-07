@@ -24,10 +24,7 @@ extension SwiftTrace {
     /**
      Hook to intercept all trace output
      */
-    public static var logOutput: (String, UnsafeRawPointer?, Int) -> () = {
-        print($0, terminator: "")
-        _ = ($1, $2) // self, indent
-    }
+    public static let logOutput = TraceOutputLog()
 
     /** Used for real time filtering */
     static var includeFilter: NSRegularExpression?
@@ -231,10 +228,12 @@ extension SwiftTrace {
                if shouldPrint || isLifetime,
                    let decorated = entryDecorate(stack: &stack), shouldPrint {
                    ThreadLocal.current().caller()?.subLogged = true
-                   let indent = String(repeating: SwiftTrace.traceIndent,
-                                       count: invocation.stackDepth)
-                   logOutput("\(subLogging() ? "\n" : "")\(indent)\(decorated)",
-                             autoBitCast(invocation.swiftSelf), invocation.stackDepth)
+                   logOutput.log(.entry(
+                    invocation: invocation,
+                    method: objcMethod,
+                    decorated: decorated,
+                    subLog: subLogging()
+                   ))
                }
            }
        }
@@ -263,14 +262,12 @@ extension SwiftTrace {
                if shouldPrint || isLifetime,
                   !invocation.swizzle.signature.contains(" async "),
                    let returnValue = exitDecorate(stack: &stack), shouldPrint {
-                   logOutput("""
-                        \(invocation.subLogged ? """
-                            \n\(String(repeating: "  ",
-                                       count: invocation.stackDepth))<-
-                            """ : objcMethod != nil ? " ->" : "") \
-                        \(returnValue)\(String(format: SwiftTrace.timeFormat,
-                                elapsed * 1000.0))\(subLogging() ? "" : "\n")
-                        """, autoBitCast(invocation.swiftSelf), invocation.stackDepth)
+                   logOutput.log(.exit(
+                    invocation: invocation,
+                    method: objcMethod,
+                    decorated: returnValue,
+                    subLog: subLogging()
+                   ))
                }
                totalElapsed += elapsed
                invocationCount += 1
