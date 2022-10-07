@@ -6,7 +6,7 @@
 //  Copyright © 2020 John Holdsworth. All rights reserved.
 //
 //  Repo: https://github.com/johnno1962/SwiftTrace
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftArgs.swift#193 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftArgs.swift#196 $
 //
 //  Decorate trace with argument/return values
 //  ==========================================
@@ -96,8 +96,8 @@ public func returner<Type>(value: Type, out: inout Any?) {
 extension SwiftTrace {
     
     /**
-     'true' skips any decoration steps when visiting Swift code
-     'false' decorates normally
+     'false' skips any decoration steps when visiting Swift code
+     'true' decorates normally
      */
     static public var swiftDecorateArgs = (onEntry: true, onExit: true)
 
@@ -166,7 +166,7 @@ extension SwiftTrace {
      Add a type to the map of type arguments that can be formatted
      (This is now automated by type lookup if you select it)
      */
-    open class func makeTraceable(types: [Any.Type]) {
+    public class func makeTraceable(types: [Any.Type]) {
         for type in types {
             let typeName = _typeName(type)
             let slotsRequired = (SwiftMeta.sizeof(anyType: type) +

@@ -5,7 +5,7 @@
 //  Created by John Holdsworth on 23/09/2020.
 //  Copyright © 2020 John Holdsworth. All rights reserved.
 //
-//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#66 $
+//  $Id: //depot/SwiftTrace/SwiftTrace/SwiftInterpose.swift#72 $
 //
 //  Extensions to SwiftTrace using dyld_dynamic_interpose
 //  =====================================================
@@ -38,14 +38,21 @@ extension SwiftTrace {
     ///   - onEntry: closure called on entry
     ///   - onExit: closure called on exit
     ///   - replaceWith: optional replacement for function
-    open class func interpose(aType: Any.Type, methodName: String,
-                              patchClass: Aspect.Type = Aspect.self,
-                              onEntry: EntryAspect? = nil,
-                              onExit: ExitAspect? = nil,
-                              replaceWith: nullImplementationType? = nil) -> Int {
-        var info = Dl_info()
-        dladdr(autoBitCast(aType), &info)
-        return interpose(aBundle: info.dli_fname, methodName: methodName,
+    public class func interpose(aType: Any.Type, methodName: String? = nil,
+                                patchClass: Aspect.Type = Aspect.self,
+                                onEntry: EntryAspect? = nil,
+                                onExit: ExitAspect? = nil,
+                                replaceWith: nullImplementationType? = nil) -> Int {
+        var bundlePath = searchBundleImages()
+        if let isClass = aType as? AnyClass {
+            bundlePath = class_getImageName(isClass) ?? searchBundleImages()
+            if methodName == nil && onEntry == nil && onExit == nil {
+                trace(aClass: isClass) // also update vtable
+            }
+        }
+
+        return interpose(aBundle: bundlePath,
+                         methodName: methodName ?? _typeName(aType)+".",
                          patchClass: patchClass, onEntry: onEntry, onExit: onExit,
                          replaceWith: replaceWith)
     }
@@ -60,32 +67,39 @@ extension SwiftTrace {
     ///   - onEntry: closure called on entry
     ///   - onExit: closure called on exit
     ///   - replaceWith: optional replacement for function
-    open class func interpose(aBundle: UnsafePointer<Int8>?, methodName: String,
-                              patchClass: Aspect.Type = Aspect.self,
-                              onEntry: EntryAspect? = nil,
-                              onExit: ExitAspect? = nil,
-                              replaceWith: nullImplementationType? = nil) -> Int {
+    public class func interpose(aBundle: UnsafePointer<Int8>?, methodName: String,
+                                patchClass: Aspect.Type = Aspect.self,
+                                onEntry: EntryAspect? = nil,
+                                onExit: ExitAspect? = nil,
+                                replaceWith: nullImplementationType? = nil) -> Int {
         var interposes = [dyld_interpose_tuple]()
+        var symbols = [UnsafePointer<Int8>]()
 
         for suffix in traceableFunctionSuffixes {
             findSwiftSymbols(aBundle, suffix) { symval, symname, _, _ in
-                if SwiftMeta.demangle(symbol: symname) == methodName,
+                if let theMethod = SwiftMeta.demangle(symbol: symname),
+                    theMethod.hasPrefix(methodName),
+                    interposeEclusions?.matches(theMethod) != true,
                     let current = interposed(replacee: symval),
-                    let method = patchClass.init(name: methodName,
+                    let interpose = patchClass.init(name: theMethod,
                          original: OpaquePointer(current),
                          onEntry: onEntry, onExit: onExit,
                          replaceWith: replaceWith) {
                     interposes.append(dyld_interpose_tuple(
-                        replacement: autoBitCast(method.forwardingImplementation),
+                        replacement: autoBitCast(interpose.forwardingImplementation),
                         replacee: current))
+                    symbols.append(symname)
                 }
             }
         }
 
-        return apply(interposes: interposes, symbols: [methodName])
+        return apply(interposes: interposes, symbols: symbols)
     }
 
-    open class func interposed(replacee: UnsafeRawPointer) -> UnsafeRawPointer? {
+    /// Has symbol already been interposed?
+    /// - Parameter replacee: original function
+    /// - Returns: pointer to end of chain of any interposes that have been aplied
+    public class func interposed(replacee: UnsafeRawPointer) -> UnsafeRawPointer? {
         let interposed = NSObject.swiftTraceInterposed.bindMemory(to:
             [UnsafeRawPointer : UnsafeRawPointer].self, capacity: 1)
         var current = replacee
@@ -102,9 +116,9 @@ extension SwiftTrace {
     ///   - inBundlePath: path to bundle to interpose
     ///   - packageName: include only methods with prefix
     ///   - subLevels: not currently used
-    @objc open class func interposeMethods(inBundlePath: UnsafePointer<Int8>,
-                                           packageName: String? = nil,
-                                           subLevels: Int = 0) -> Int {
+    @objc public class func interposeMethods(inBundlePath: UnsafePointer<Int8>,
+                                             packageName: String? = nil,
+                                             subLevels: Int = 0) -> Int {
         startNewTrace(subLevels: subLevels)
         var interposes = [dyld_interpose_tuple]()
         var symbols = [UnsafePointer<Int8>]()
@@ -135,7 +149,7 @@ extension SwiftTrace {
     }
 
     /// Use interposing to trace all methods in main bundle
-    @objc open class func traceMainBundleMethods() -> Int {
+    @objc public class func traceMainBundleMethods() -> Int {
         return interposeMethods(inBundlePath: Bundle.main.executablePath!)
     }
 
@@ -143,12 +157,12 @@ extension SwiftTrace {
     /// Doesn't actually require -Xlinker -interposable
     /// - Parameters:
     ///   - aClass: Class which the framework contains
-    @objc open class func traceMethods(inFrameworkContaining aClass: AnyClass) -> Int {
+    @objc public class func traceMethods(inFrameworkContaining aClass: AnyClass) -> Int {
         return interposeMethods(inBundlePath: class_getImageName(aClass)!)
     }
 
     /// Apply a trace to all methods in framesworks in app bundle
-    @objc open class func traceFrameworkMethods() -> Int {
+    @objc public class func traceFrameworkMethods() -> Int {
         var replaced = 0
         appBundleImages { imageName, _, _ in
             if strstr(imageName, ".framework") != nil {
@@ -160,8 +174,8 @@ extension SwiftTrace {
     }
 
     /// Legacy entry point that can use either fishhook or "dyld_dynamic_interpose"
-    open class func apply(interposes: [dyld_interpose_tuple],
-                          symbols: [UnsafePointer<Int8>], onInjection:
+    public class func apply(interposes: [dyld_interpose_tuple],
+                            symbols: [UnsafePointer<Int8>], onInjection:
                     ((UnsafePointer<mach_header>, intptr_t) -> Void)? = nil)
         -> Int {
         var rebindings = record(interposes: interposes, symbols: symbols)
@@ -194,7 +208,7 @@ extension SwiftTrace {
     }
 
     /// record interposed so they can be untraced and combine with symbols to create rebindings
-    open class func record(interposes: [dyld_interpose_tuple],
+    public class func record(interposes: [dyld_interpose_tuple],
                            symbols: [UnsafePointer<Int8>]) -> [rebinding] {
         let interposed = NSObject.swiftTraceInterposed.bindMemory(to:
             [UnsafeRawPointer : UnsafeRawPointer].self, capacity: 1)
@@ -212,7 +226,7 @@ extension SwiftTrace {
     }
 
     /// Use fishhook to apply interposes returning an array of symbols that were patched
-    open class func apply(rebindings: inout [rebinding], onInjection:
+    public class func apply(rebindings: inout [rebinding], onInjection:
         ((UnsafePointer<mach_header>, intptr_t) -> Void)? = nil)
         -> [UnsafePointer<Int8>] {
         var interposed = [UnsafePointer<Int8>]()
@@ -233,16 +247,17 @@ extension SwiftTrace {
     }
 
     /// Use fishhook to apply interposes in an image returning an array of symbols that were patched
-    open class func apply(rebindings: UnsafeMutablePointer<rebinding>, count: Int,
-                          header: UnsafePointer<mach_header>, slide: intptr_t)
+    public class func apply(rebindings: UnsafeMutablePointer<rebinding>, count: Int,
+                            header: UnsafePointer<mach_header>, slide: intptr_t)
         -> [UnsafePointer<Int8>] {
-        var interposed = [UnsafePointer<Int8>]()
         for i in 0..<count {
             rebindings[i].replaced =
                 UnsafeMutablePointer(cast: &rebindings[i].replaced)
         }
         rebind_symbols_image(UnsafeMutableRawPointer(mutating: header),
                              slide, rebindings, count)
+
+        var interposed = [UnsafePointer<Int8>]()
         for i in 0..<count {
             if rebindings[i].replaced !=
                 UnsafeMutablePointer(cast: &rebindings[i].replaced) {
